@@ -12,19 +12,24 @@ st.set_page_config(
 )
 
 st.title("⚽ مساعد فانتسي البريميرليج الذكي (FPL AI Advisor)")
-st.write("تحليل استراتيجي دقيق يراعي الإصابات، المباريات القادمة، والتبديلات المتاحة.")
+st.write("تحليل استراتيجي دقيق يراعي الإصابات، المباريات القادمة، والتبديلات المعلقة.")
 
 # الشريط الجانبي (Sidebar)
 st.sidebar.header("⚙️ إعدادات الحساب")
 api_key = st.sidebar.text_input("Gemini API Key", type="password", help="أدخل مفتاح Gemini API الخاص بك")
-team_id = st.sidebar.number_input("FPL Team ID", value=0, step=1, help="رقم فريقك في موقع الفانتسي الرسمي")
+team_id = st.sidebar.number_input("FPL Team ID", value=0, step=1, help="رقم فريقك من صفحة النقاط Points")
 
-st.sidebar.subheader("🛠️ التبديلات والبنك (إدخال يدوي)")
-manual_ft = st.sidebar.number_input("عدد التبديلات المتاحة فعلياً", min_value=0, max_value=5, value=1)
+st.sidebar.subheader("🛠️ ضبط التبديلات والبنك")
+manual_ft = st.sidebar.number_input("عدد التبديلات المتاحة المتبقية", min_value=0, max_value=5, value=0)
 manual_bank = st.sidebar.number_input("الميزانية المتاحة بالبنك (M£)", min_value=0.0, max_value=15.0, value=0.0, step=0.1)
 
-def get_fpl_analysis(team_id: int, api_key: str, ft: int, bank: float):
-    """جلب بيانات الفانتسي العامة مع تخصيص الميزانية والتبديلات يدوياً"""
+# تسجيل التبديلات الجديدة المعلقة
+st.sidebar.subheader("🔄 التبديل الذي أجريته مؤخراً (اختياري)")
+sold_player = st.sidebar.text_input("اسم لاعب قمت ببيعه للجولة القادمة", help="مثل: Joao Pedro")
+bought_player = st.sidebar.text_input("اسم لاعب قمت بشرائه بدلاً منه", help="مثل: Solanke")
+
+def get_fpl_analysis(team_id: int, api_key: str, ft: int, bank: float, player_out: str, player_in: str):
+    """جلب بيانات الفانتسي مع تحديث التبديلات المعلقة يدوياً"""
     base_url = "https://fantasy.premierleague.com/api/"
     
     # 1. جلب البيانات العامة والمباريات
@@ -38,7 +43,7 @@ def get_fpl_analysis(team_id: int, api_key: str, ft: int, bank: float):
     teams_map = {t["id"]: t["short_name"] for t in base_data["teams"]}
     players_map = {p["id"]: p for p in base_data["elements"]}
     
-    # تحديد خصوم الجولة القادمة
+    # تحديد خصوم الجولة القادمة (Fixture Difficulty / Opponents)
     next_fixtures = {}
     for f in fixtures_data:
         if f.get("event") == next_gw:
@@ -57,7 +62,7 @@ def get_fpl_analysis(team_id: int, api_key: str, ft: int, bank: float):
         
     user_picks = public_picks["picks"]
 
-    # 3. بناء جدول التشكيلة وحالات الإصابات (News Status)
+    # 3. بناء جدول التشكيلة وحالات الإصابة
     squad_list = []
     for pick in user_picks:
         p_info = players_map[pick["element"]]
@@ -79,22 +84,35 @@ def get_fpl_analysis(team_id: int, api_key: str, ft: int, bank: float):
     
     squad_df = pd.DataFrame(squad_list)
 
+    # إضافة صياغة نصية بخصوص التبديل المعلق
+    transfer_note = ""
+    if player_out and player_in:
+        transfer_note = f"""
+        ⚠️ تنبيه هام حول التعديل الأخير:
+        قام المستخدم بالفعل بعمل تبديل رسمي للجولة القادمة (GW{next_gw}):
+        - قام ببيع اللاعب: {player_out}
+        - قام بشراء اللاعب: {player_in}
+        * يرجى إزالة {player_out} من حسابات التشكيلة واعتبار {player_in} هو المتواجد فعلياً في التشكيلة الحالية عند التحليل واختيار الكابتن.
+        """
+
     # 4. صياغة الاستعلام للذكاء الاصطناعي (Prompt Engineering)
     prompt = f"""
     أنت مستشار فانتسي البريميرليج (FPL) محترف وخبير إحصائي.
-    هذه تشكيلة المستخدم الحالية استعداداً للجولة {next_gw}:
+    هذه تشكيلة المستخدم المسجلة للجولة {next_gw}:
     
     {squad_df.to_string(index=False)}
     
-    البيانات المعتمدة من المستخدم:
+    {transfer_note}
+    
+    البيانات المعتمدة من المستخدم حالياً:
     - المبلغ المتاح في البنك (Bank): {bank}M£
-    - عدد التبديلات المجانية المتاحة فعلياً (Free Transfers): {ft}
+    - عدد التبديلات المجانية المتبقية المتاحة (Free Transfers): {ft}
     
     المطلوب تقديم تقرير استراتيجي دقيق يراعي النقاط التالية:
-    1. **الإصابات والشكوك:** مراجعة عمود الحالة الطبية وإعطاء أولوية لمعالجة المصابين (مثل جواو بيدرو إن وجد).
-    2. **التبديلات:** التبديلات المتاحة هي {ft} فقط. إذا كانت 0 واللاعب المصاب غيابه بسيط، يُنصح بالاحتفاظ به على الدكة تجنباً لخصم النقاط (-4).
-    3. **ترشيح التبديل الأفضل للجولة {next_gw}.**
-    4. **اختيارات الكابتن ونائب الكابتن مع ذكر السبب.**
+    1. **تحليل التشكيلة المعدلة:** تقييم التشكيلة بعد أخذ التبديل المذكور أعلاه ({player_in} بدلاً من {player_out}) بعين الاعتبار.
+    2. **حالة الإصابات:** مراجعة غيابات بقية اللاعبين والتعامل مع أي مصاب آخر.
+    3. **النصيحة القادمة:** المتبقي من التبديلات هو {ft}. إذا كان 0، ينصح بعدم إجراء تبديلات إضافية إلا للضرورة القادمة لحفظ النقاط.
+    4. **اختيارات الكابتن ونائب الكابتن للجولة {next_gw}.**
     """
 
     client = genai.Client(api_key=api_key)
@@ -102,7 +120,7 @@ def get_fpl_analysis(team_id: int, api_key: str, ft: int, bank: float):
     
     for attempt in range(1, 4):
         try:
-            status_placeholder.info(f"🔄 جاري تحليل التشكيلة وحالة الإصابات (المحاولة {attempt} من 3)...")
+            status_placeholder.info(f"🔄 جاري تحليل التشكيلة المعدلة وحالة الإصابات (المحاولة {attempt} من 3)...")
             response = client.models.generate_content(
                 model="gemini-3.6-flash",
                 contents=prompt
@@ -124,7 +142,7 @@ if st.button("🚀 بدء التحليل واستخراج التوصيات", typ
     elif team_id <= 0:
         st.warning("⚠️ يرجى إدخال رقم فريق (Team ID) صحيح.")
     else:
-        report, next_gw = get_fpl_analysis(team_id, api_key, manual_ft, manual_bank)
+        report, next_gw = get_fpl_analysis(team_id, api_key, manual_ft, manual_bank, sold_player, bought_player)
         if report:
             st.success(f"✅ تم إعداد التقرير بنجاح للجولة {next_gw}!")
             st.markdown("---")
