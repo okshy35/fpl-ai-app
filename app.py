@@ -12,7 +12,7 @@ st.set_page_config(
 )
 
 st.title("⚽ مساعد فانتسي البريميرليج الذكي (FPL AI Advisor)")
-st.write("احصل على تحليل استراتيجي لتشكيلتك وتوصيات بالتبديلات واختيار الكابتن للجدولة القادمة.")
+st.write("احصل على تحليل استراتيجي لتشكيلتك وتوصيات بالتبديلات واختيار الكابتن للجولة القادمة.")
 
 # الشريط الجانبي لإدخال البيانات (Sidebar)
 st.sidebar.header("⚙️ إعدادات الحساب")
@@ -71,25 +71,36 @@ def get_fpl_analysis(team_id: int, api_key: str):
     4. نصيحة حول الخواص (Chips) وتوقيت استخدامها إذا كان ذلك مناسباً.
     """
 
-    # الاتصال بالذكاء الاصطناعي مع إعادة المحاولة
     client = genai.Client(api_key=api_key)
     target_model = "gemini-3.6-flash"
-    max_attempts = 3
+    max_attempts = 4
     response_text = None
+    
+    status_placeholder = st.empty()
     
     for attempt in range(1, max_attempts + 1):
         try:
+            status_placeholder.info(f"🔄 جاري تحليل التشكيلة عبر الذكاء الاصطناعي (المحاولة {attempt} من {max_attempts})...")
             response = client.models.generate_content(
                 model=target_model,
                 contents=prompt
             )
             response_text = response.text
+            status_placeholder.empty()
             break
         except Exception as e:
-            if attempt < max_attempts:
-                time.sleep(4)
+            if "503" in str(e) or "UNAVAILABLE" in str(e):
+                if attempt < max_attempts:
+                    wait_time = attempt * 4
+                    status_placeholder.warning(f"⚠️ السيرفر يشهد ضغطاً مؤقتاً.. جاري الانتظار {wait_time} ثوانٍ وإعادة المحاولة تلقائياً...")
+                    time.sleep(wait_time)
+                else:
+                    status_placeholder.empty()
+                    st.error("❌ السيرفر مشغول جداً في هذه اللحظة بسبب الإقبال المرتفع. اضغط على الزر مرة أخرى بعد القليل من الوقت.")
+                    return None, None
             else:
-                st.error(f"❌ تعذر الاتصال بالسيرفر بسبب الضغط: {e}")
+                status_placeholder.empty()
+                st.error(f"❌ حدث خطأ أثناء الاتصال: {e}")
                 return None, None
 
     return response_text, next_gw
@@ -101,12 +112,11 @@ if st.button("🚀 بدء التحليل واستخراج التوصيات", typ
     elif team_id <= 0:
         st.warning("⚠️ يرجى إدخال رقم فريق (Team ID) صحيح.")
     else:
-        with st.spinner("⏳ جاري سحب بيانات تشكيلتك وتحليلها بواسطة الذكاء الاصطناعي..."):
-            try:
-                report, next_gw = get_fpl_analysis(team_id, api_key)
-                if report:
-                    st.success(f"✅ تم إعداد تقرير الجولة {next_gw} بنجاح!")
-                    st.markdown("---")
-                    st.markdown(report)
-            except Exception as e:
-                st.error(f"حدث خطأ أثناء جلب البيانات: {e}")
+        try:
+            report, next_gw = get_fpl_analysis(team_id, api_key)
+            if report:
+                st.success(f"✅ تم إعداد تقرير الجولة {next_gw} بنجاح!")
+                st.markdown("---")
+                st.markdown(report)
+        except Exception as e:
+            st.error(f"حدث خطأ أثناء جلب البيانات: {e}")
