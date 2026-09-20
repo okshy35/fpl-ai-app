@@ -12,111 +12,120 @@ st.set_page_config(
 )
 
 st.title("⚽ مساعد فانتسي البريميرليج الذكي (FPL AI Advisor)")
-st.write("احصل على تحليل استراتيجي لتشكيلتك وتوصيات بالتبديلات واختيار الكابتن للجولة القادمة.")
+st.write("تحليل استراتيجي دقيق يراعي الإصابات، المباريات القادمة، والتبديلات المتاحة.")
 
-# الشريط الجانبي لإدخال البيانات (Sidebar)
+# الشريط الجانبي (Sidebar)
 st.sidebar.header("⚙️ إعدادات الحساب")
 api_key = st.sidebar.text_input("Gemini API Key", type="password", help="أدخل مفتاح Gemini API الخاص بك")
 team_id = st.sidebar.number_input("FPL Team ID", value=0, step=1, help="رقم فريقك في موقع الفانتسي الرسمي")
 
-def get_fpl_analysis(team_id: int, api_key: str):
-    """جلب بيانات الفانتسي وتحليلها عبر Gemini"""
+st.sidebar.subheader("🛠️ التبديلات والبنك (إدخال يدوي)")
+manual_ft = st.sidebar.number_input("عدد التبديلات المتاحة فعلياً", min_value=0, max_value=5, value=1)
+manual_bank = st.sidebar.number_input("الميزانية المتاحة بالبنك (M£)", min_value=0.0, max_value=15.0, value=0.0, step=0.1)
+
+def get_fpl_analysis(team_id: int, api_key: str, ft: int, bank: float):
+    """جلب بيانات الفانتسي العامة مع تخصيص الميزانية والتبديلات يدوياً"""
     base_url = "https://fantasy.premierleague.com/api/"
-    base_data = requests.get(f"{base_url}bootstrap-static/").json()
     
-    # تحديد الجولة الحالية والجولة القادمة
+    # 1. جلب البيانات العامة والمباريات
+    base_data = requests.get(f"{base_url}bootstrap-static/").json()
+    fixtures_data = requests.get(f"{base_url}fixtures/").json()
+    
     events = base_data["events"]
     current_gw = next((e["id"] for e in events if e["is_current"]), 1)
     next_gw = current_gw + 1 if current_gw < 38 else 38
     
-    # جلب تشكيلة المستخدم
-    picks_url = f"{base_url}entry/{team_id}/event/{current_gw}/picks/"
-    user_picks = requests.get(picks_url).json()
-    
-    if "detail" in user_picks and user_picks["detail"] == "Not found.":
-        st.error(f"❌ لم يتم العثور على فريق بالرقم {team_id}.")
-        return None, None
-
-    # تجهيز سجلات اللاعبين
+    teams_map = {t["id"]: t["short_name"] for t in base_data["teams"]}
     players_map = {p["id"]: p for p in base_data["elements"]}
     
+    # تحديد خصوم الجولة القادمة
+    next_fixtures = {}
+    for f in fixtures_data:
+        if f.get("event") == next_gw:
+            h_team = teams_map[f["team_h"]]
+            a_team = teams_map[f["team_a"]]
+            next_fixtures[f["team_h"]] = f"{a_team} (أرضه)"
+            next_fixtures[f["team_a"]] = f"{h_team} (خارجه)"
+
+    # 2. جلب تشكيلة الفريق عبر Team ID
+    picks_url = f"{base_url}entry/{team_id}/event/{current_gw}/picks/"
+    public_picks = requests.get(picks_url).json()
+    
+    if "detail" in public_picks and public_picks["detail"] == "Not found.":
+        st.error(f"❌ لم يتم العثور على فريق بالرقم {team_id}.")
+        return None, None
+        
+    user_picks = public_picks["picks"]
+
+    # 3. بناء جدول التشكيلة وحالات الإصابات (News Status)
     squad_list = []
-    for pick in user_picks["picks"]:
+    for pick in user_picks:
         p_info = players_map[pick["element"]]
+        opponent = next_fixtures.get(p_info["team"], "غير محدد")
+        
+        news_status = p_info["news"] if p_info["news"] else "سليم وجاهز"
+        chance = p_info["chance_of_playing_next_round"]
+        chance_str = f"{chance}%" if chance is not None else "100%"
+
         squad_list.append({
-            "الاسم": p_info["web_name"],
+            "اللاعب": p_info["web_name"],
+            "المركز": p_info["element_type"],
+            "الخصم القادم": opponent,
             "الفورمة (Form)": p_info["form"],
             "السعر": p_info["now_cost"] / 10,
-            "كابتن": "نعم" if pick["is_captain"] else "لا"
+            "الحالة الطبية/الإصابة": f"{news_status} ({chance_str})",
+            "كابتن": "نعم" if pick.get("is_captain") else "لا"
         })
     
     squad_df = pd.DataFrame(squad_list)
-    bank_money = user_picks["entry_history"]["bank"] / 10
-    free_transfers = user_picks["entry_history"]["event_transfers"]
 
-    # صياغة الاستعلام للذكاء الاصطناعي
+    # 4. صياغة الاستعلام للذكاء الاصطناعي (Prompt Engineering)
     prompt = f"""
-    أنت مستشار فانتسي البريميرليج (FPL) محترف. 
-    هذه تشكيلتي الحالية وأنا أستعد للتحضير والتخطيط للجولة القادمة (الجولة {next_gw}):
+    أنت مستشار فانتسي البريميرليج (FPL) محترف وخبير إحصائي.
+    هذه تشكيلة المستخدم الحالية استعداداً للجولة {next_gw}:
     
     {squad_df.to_string(index=False)}
     
-    المبلغ المتاح في البنك (Bank): {bank_money}M
-    عدد التبديلات المتاحة (Free Transfers): {free_transfers}
+    البيانات المعتمدة من المستخدم:
+    - المبلغ المتاح في البنك (Bank): {bank}M£
+    - عدد التبديلات المجانية المتاحة فعلياً (Free Transfers): {ft}
     
-    المطلوب تقديم تقرير شامل يحتوي على:
-    1. تقييم سريع ومختصر للتشكيلة قبل الجولة {next_gw}.
-    2. ترشيح أفضل تبديل للجولة {next_gw} (بيع لاعب وتحديد البديل الأفضل مع التكلفة).
-    3. اختيارات الكابتن ونائب الكابتن للجولة {next_gw}.
-    4. نصيحة حول الخواص (Chips) وتوقيت استخدامها إذا كان ذلك مناسباً.
+    المطلوب تقديم تقرير استراتيجي دقيق يراعي النقاط التالية:
+    1. **الإصابات والشكوك:** مراجعة عمود الحالة الطبية وإعطاء أولوية لمعالجة المصابين (مثل جواو بيدرو إن وجد).
+    2. **التبديلات:** التبديلات المتاحة هي {ft} فقط. إذا كانت 0 واللاعب المصاب غيابه بسيط، يُنصح بالاحتفاظ به على الدكة تجنباً لخصم النقاط (-4).
+    3. **ترشيح التبديل الأفضل للجولة {next_gw}.**
+    4. **اختيارات الكابتن ونائب الكابتن مع ذكر السبب.**
     """
 
     client = genai.Client(api_key=api_key)
-    target_model = "gemini-3.6-flash"
-    max_attempts = 4
-    response_text = None
-    
     status_placeholder = st.empty()
     
-    for attempt in range(1, max_attempts + 1):
+    for attempt in range(1, 4):
         try:
-            status_placeholder.info(f"🔄 جاري تحليل التشكيلة عبر الذكاء الاصطناعي (المحاولة {attempt} من {max_attempts})...")
+            status_placeholder.info(f"🔄 جاري تحليل التشكيلة وحالة الإصابات (المحاولة {attempt} من 3)...")
             response = client.models.generate_content(
-                model=target_model,
+                model="gemini-3.6-flash",
                 contents=prompt
             )
-            response_text = response.text
             status_placeholder.empty()
-            break
+            return response.text, next_gw
         except Exception as e:
-            if "503" in str(e) or "UNAVAILABLE" in str(e):
-                if attempt < max_attempts:
-                    wait_time = attempt * 4
-                    status_placeholder.warning(f"⚠️ السيرفر يشهد ضغطاً مؤقتاً.. جاري الانتظار {wait_time} ثوانٍ وإعادة المحاولة تلقائياً...")
-                    time.sleep(wait_time)
-                else:
-                    status_placeholder.empty()
-                    st.error("❌ السيرفر مشغول جداً في هذه اللحظة بسبب الإقبال المرتفع. اضغط على الزر مرة أخرى بعد القليل من الوقت.")
-                    return None, None
+            if attempt < 3:
+                time.sleep(3)
             else:
                 status_placeholder.empty()
-                st.error(f"❌ حدث خطأ أثناء الاتصال: {e}")
+                st.error(f"❌ تعذر الحصول على التقرير: {e}")
                 return None, None
 
-    return response_text, next_gw
-
-# زر التشغيل في الواجهة الرئيسية
+# زر التشغيل
 if st.button("🚀 بدء التحليل واستخراج التوصيات", type="primary"):
     if not api_key:
-        st.warning("⚠️ يرجى إدخال Gemini API Key في الشريط الجانبي أولاً.")
+        st.warning("⚠️ يرجى إدخال Gemini API Key أولاً.")
     elif team_id <= 0:
         st.warning("⚠️ يرجى إدخال رقم فريق (Team ID) صحيح.")
     else:
-        try:
-            report, next_gw = get_fpl_analysis(team_id, api_key)
-            if report:
-                st.success(f"✅ تم إعداد تقرير الجولة {next_gw} بنجاح!")
-                st.markdown("---")
-                st.markdown(report)
-        except Exception as e:
-            st.error(f"حدث خطأ أثناء جلب البيانات: {e}")
+        report, next_gw = get_fpl_analysis(team_id, api_key, manual_ft, manual_bank)
+        if report:
+            st.success(f"✅ تم إعداد التقرير بنجاح للجولة {next_gw}!")
+            st.markdown("---")
+            st.markdown(report)
