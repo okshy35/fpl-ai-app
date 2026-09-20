@@ -1,0 +1,26 @@
+# تطبيق اتجاه اللغة العربية من اليمين إلى اليسار (RTL)
+st.markdown("""
+    <style>
+    /* تطبيق اتجاه النص على مستوى الصفحة بالكامل */
+    html, body, [class*="css"], .stMarkdown, p, div, h1, h2, h3, h4, h5, h6, span, li {
+        direction: rtl !important;
+        text-align: right !important;
+    }
+    /* ضبط اتجاه القوائم النقطية */
+    ul, ol {
+        direction: rtl !important;
+        padding-right: 20px !important;
+        padding-left: 0px !important;
+    }
+    /* ضبط اتجاه الجداول */
+    .stDataFrame, table {
+        direction: rtl !important;
+        text-align: right !important;
+    }
+    /* ضبط القائمة الجانبية */
+    section[data-testid="stSidebar"] {
+        direction: rtl !important;
+        text-align: right !important;
+    }
+    </style>
+""", unsafe_allow_html=True)
